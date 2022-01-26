@@ -187,8 +187,8 @@ class Predictor(object):
         return vis_res
     
     def save_pkl(self):
-        with open('/opt/tiger/mlx_notebook/dumps/full_video.pkl', 'wb') as f:
-            plckle.dump(self.outputs, f)
+        with open('/opt/tiger/mlx_notebook/dumps/demo_video_res.pkl', 'wb') as f:
+            pickle.dump(self.outputs, f)
 
 
 def image_demo(predictor, vis_folder, path, current_time, save_result):
