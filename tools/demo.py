@@ -15,7 +15,7 @@ from yolox.data.data_augment import ValTransform
 from yolox.data.datasets import COCO_CLASSES
 from yolox.exp import get_exp
 from yolox.utils import fuse_model, get_model_info, postprocess, vis
-import pickle
+import json
 
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
 
@@ -37,6 +37,11 @@ def make_parser():
         action="store_true",
         help="whether to save the inference result of image/video",
     )
+    parser.add_argument(
+        "--save_result_json",
+        action="store_true",
+        help="Set whether result is saved in json format."
+    )
 
     # exp file
     parser.add_argument(
@@ -56,6 +61,12 @@ def make_parser():
     parser.add_argument("--conf", default=0.3, type=float, help="test conf")
     parser.add_argument("--nms", default=0.3, type=float, help="test nms threshold")
     parser.add_argument("--tsize", default=None, type=int, help="test img size")
+    parser.add_argument(
+        "--frame_sample_interval",
+        default=0.0,
+        type=float,
+        help="Set how long seconds to capture a frame from video, default capture all frames.",
+    )
     parser.add_argument(
         "--fp16",
         dest="fp16",
@@ -84,7 +95,9 @@ def make_parser():
         action="store_true",
         help="Using TensorRT model for testing.",
     )
+
     return parser
+
 
 
 def get_image_list(path):
@@ -165,8 +178,39 @@ class Predictor(object):
                 self.nmsthre, class_agnostic=True
             )
             logger.info("Infer time: {:.4f}s".format(time.time() - t0))
+
         self.outputs.append(outputs)
         return outputs, img_info
+    
+    def get_detect_info(self, output, img_info, conf):
+        detect_info_list= []
+        ratio = img_info["ratio"]
+        output = output.cpu().numpy()
+        
+        bboxes = output[:, 0:4]
+        # preprocessing: resize
+        bboxes /= ratio
+
+        cls_ids = output[:, 6]
+        scores = output[:, 4] * output[:, 5]
+        
+        for i in range(len(bboxes)):
+            bbox = bboxes[i].tolist()
+            cls_id = int(cls_ids[i])
+            score = scores[i]
+            if score < conf:
+                continue
+            detect_info_list.append({
+                'class_id': cls_id,
+                'class_name': self.cls_names[cls_id],
+                'bbox':bbox,
+                'score':float(score),
+            })
+        
+        
+        return detect_info_list
+
+
 
     def visual(self, output, img_info, cls_conf=0.35):
         ratio = img_info["ratio"]
@@ -185,10 +229,7 @@ class Predictor(object):
 
         vis_res = vis(img, bboxes, scores, cls, cls_conf, self.cls_names)
         return vis_res
-    
-    def save_pkl(self):
-        with open('/opt/tiger/mlx_notebook/dumps/demo_video_res.pkl', 'wb') as f:
-            pickle.dump(self.outputs, f)
+
 
 
 def image_demo(predictor, vis_folder, path, current_time, save_result):
@@ -214,34 +255,75 @@ def image_demo(predictor, vis_folder, path, current_time, save_result):
 
 
 def imageflow_demo(predictor, vis_folder, current_time, args):
+    output_info_list = []
     cap = cv2.VideoCapture(args.path if args.demo == "video" else args.camid)
     width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)  # float
     height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)  # float
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    ori_fps = cap.get(cv2.CAP_PROP_FPS)
+    num_total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    duration = num_total_frames / ori_fps
+    ## 根据传入参数设置新的每帧间隔时间
+    if args.frame_sample_interval > 0:
+        frame_sample_interval = args.frame_sample_interval
+        num_sample_frames = int(duration / frame_sample_interval)
+
+        # 计算每要sample的两帧间隔了多少帧
+        per_sample_length = int(num_total_frames // num_sample_frames)
+        
+    else:
+        per_sample_length = 1
+        
     save_folder = os.path.join(
         vis_folder, time.strftime("%Y_%m_%d_%H_%M_%S", current_time)
     )
     os.makedirs(save_folder, exist_ok=True)
-    if args.demo == "video":
+    
+    if args.demo == "video" and args.save_result:
         save_path = os.path.join(save_folder, args.path.split("/")[-1])
     else:
         save_path = os.path.join(save_folder, "camera.mp4")
     logger.info(f"video save_path is {save_path}")
     vid_writer = cv2.VideoWriter(
-        save_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (int(width), int(height))
+        save_path, cv2.VideoWriter_fourcc(*"mp4v"), ori_fps, (int(width), int(height))
     )
     while True:
+        current_frame_idx = cap.get(cv2.CAP_PROP_POS_FRAMES)
         ret_val, frame = cap.read()
-        if ret_val:
+        
+        # 判断是否已经结束
+        if not ret_val:
+            if args.save_result_json:
+                json_file_save_path = os.path.join(save_folder, 'detect_result.json')
+                result_json = {'result': output_info_list}
+                with open(json_file_save_path, 'w') as f:
+                    json.dump(result_json, f)
+            break
+        else:
+            # 判断一下当前index的帧是否是需要sample的，不需要的帧直接跳过
+            if int(current_frame_idx) % per_sample_length != 0:
+                continue
+
             outputs, img_info = predictor.inference(frame)
-            result_frame = predictor.visual(outputs[0], img_info, predictor.confthre)
+            if args.save_result_json:
+                detect_info_list = predictor.get_detect_info(outputs[0], img_info, predictor.confthre)
+                output_info = {
+                    'frame_idx': current_frame_idx,
+                    'frame_milliseconds': int(cap.get(cv2.CAP_PROP_POS_MSEC)),
+                    'detect_infos': detect_info_list,
+                }
+                output_info_list.append(output_info)
+                
             if args.save_result:
+                result_frame = predictor.visual(outputs[0], img_info, predictor.confthre)
                 vid_writer.write(result_frame)
+                
             ch = cv2.waitKey(1)
             if ch == 27 or ch == ord("q") or ch == ord("Q"):
                 break
-        else:
-            break
+            
+        
+            
+
 
 
 def main(exp, args):
@@ -252,7 +334,7 @@ def main(exp, args):
     os.makedirs(file_name, exist_ok=True)
 
     vis_folder = None
-    if args.save_result:
+    if args.save_result or args.save_result_json:
         vis_folder = os.path.join(file_name, "vis_res")
         os.makedirs(vis_folder, exist_ok=True)
 
@@ -315,7 +397,6 @@ def main(exp, args):
     elif args.demo == "video" or args.demo == "webcam":
         imageflow_demo(predictor, vis_folder, current_time, args)
     
-    predictor.save_pkl()
 
 if __name__ == "__main__":
     args = make_parser().parse_args()
