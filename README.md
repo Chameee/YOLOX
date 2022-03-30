@@ -63,6 +63,7 @@ python3 tools/demo.py video -n yolox-s --trt -c YOLOX_outputs/yolox_s/model_trt.
 ## Custom Args
 
 `--frame_sample_interval`: Set how long seconds (*e.g.* 0.1) to capture a frame from video, default capture all frames. 
+
 `--save_result_json`: Set whether detection result is saved in json format. 
 
 
