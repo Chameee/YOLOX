@@ -46,7 +46,7 @@ docker run --gpus all -v {YOUR_DATA_SAVEDIR}:/data -itd yolox_deploy:v1
 
 First convert *PyTorch* exported checkpoint into *TensorRT* to accelerate interence speed (10x ~ 100x).
 
-[YOLOX-S Checkpoint Download link](https://github.com/Megvii-BaseDetection/storage/releases/download/0.0.1/yolox_s.pth)
+[YOLOX-S Checkpoint Download link](https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth)
 
 ```
 python3 tools/trt.py -n yolox-s  -c /data/yolox_s.pth
