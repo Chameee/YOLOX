@@ -183,6 +183,8 @@ class Predictor(object):
         return outputs, img_info
     
     def get_detect_info(self, output, img_info, conf):
+        if output is None:
+            return
         detect_info_list= []
         ratio = img_info["ratio"]
         output = output.cpu().numpy()
